@@ -4,13 +4,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-009688.svg)](https://fastapi.tiangolo.com)
 
-A local macOS HTTP API gateway that exposes Apple-protected capabilities (Reminders, Messages) via a stable, agent-friendly REST API.
+A local macOS HTTP API gateway that exposes Apple-protected capabilities (Reminders, Messages, Notes) via a stable, agent-friendly REST API.
 
 ## Why MAG?
 
 Modern AI agents running in VMs, containers, or remote hosts cannot access macOS-protected services due to:
 
-- **TCC Permission Enforcement** — Apple restricts access to Reminders, Messages, etc.
+- **TCC Permission Enforcement** — Apple restricts access to Reminders, Messages, Notes, etc.
 - **Sandbox Restrictions** — VMs and containers can't invoke macOS CLIs
 - **Fragile CLI Integration** — Direct CLI execution from agents is unreliable
 
@@ -18,13 +18,13 @@ MAG solves this by running on your Mac as a secure HTTP gateway, handling all TC
 
 ### What This Means for You
 
-**In plain terms:** MAG lets AI assistants work with your Apple Reminders and Messages—apps that are normally locked to your Mac—in a controlled, secure way.
+**In plain terms:** MAG lets AI assistants work with your Apple Reminders, Messages, and Notes—apps that are normally locked to your Mac—in a controlled, secure way.
 
 - **Your AI assistant can now help with real tasks** — "Add a reminder for tomorrow", "Find the links Jane sent me last week", "Text me my todo list"
 - **Works with any AI agent** — OpenClaw, Claude Code, Cursor, or any tool that can make HTTP requests
 - **You stay in control** — Choose exactly what the AI can do: read-only access, send only to specific contacts, or full access
 - **No cloud required** — Everything runs locally on your Mac; your data never leaves your computer
-- **Built on trusted tools** — Uses popular open-source CLIs ([remindctl](https://github.com/keith/reminders-cli), [imsg](https://github.com/chrisbrandow/imsg)) with a standard REST API on top
+- **Built on trusted tools** — Uses popular open-source tools ([remindctl](https://github.com/keith/reminders-cli), [imsg](https://github.com/chrisbrandow/imsg), [macnotesapp](https://github.com/RhetTbull/macnotesapp)) with a standard REST API on top
 
 **Example permissions you can set:**
 - Allow reading messages but not sending
@@ -55,10 +55,12 @@ flowchart LR
         subgraph API["REST API :8123"]
             R["/v1/reminders"]
             M["/v1/messages"]
+            N["/v1/notes"]
         end
         subgraph Services["CLI Services"]
             RC["remindctl"]
             IM["imsg"]
+            NA["macnotesapp"]
         end
         API --> Services
     end
@@ -67,11 +69,13 @@ flowchart LR
         direction TB
         REM["Reminders.app"]
         MSG["Messages.app"]
+        NOTES["Notes.app"]
     end
 
     A1 & A2 & A3 -->|"HTTP + API Key"| API
     RC -->|"TCC Granted"| REM
     IM -->|"TCC Granted"| MSG
+    NA -->|"TCC Granted"| NOTES
 
     style Agents fill:#e1f5fe,stroke:#01579b
     style Gateway fill:#fff3e0,stroke:#e65100
@@ -101,7 +105,7 @@ flowchart LR
 
     subgraph Mac["🖥️ Your Mac"]
         MAG["MAG Gateway - 127.0.0.1:8123"]
-        Apps["Reminders, Messages"]
+        Apps["Reminders, Messages, Notes"]
         MAG --> Apps
     end
 
@@ -148,6 +152,7 @@ curl -H "X-API-Key: $KEY" http://100.x.x.x:8123/health
 
 - **Apple Reminders API** — Full CRUD: create, list, update, complete, delete reminders and lists
 - **Apple Messages API** — Send/reply to iMessages, list threads, search messages, extract links, stream new messages
+- **Apple Notes API** — List, search, fetch, and create notes through Notes.app
 - **Attachment Downloads** — Download photos and files from messages via secure REST API
 - **OpenAPI/Swagger** — Auto-generated docs at `/docs` and `/openapi.json`
 - **Agent Skills** — Portable skill definitions for OpenClaw (formerly Clawdbot/Moltbot), Cursor, and other agents
@@ -187,7 +192,7 @@ The gateway is now running at `http://localhost:8123`. Visit `/docs` for the int
 - **Python 3.11+**
 - **Homebrew**
 
-When first running, macOS will prompt you to grant Reminders and Messages permissions to Terminal/iTerm.
+When first running, macOS will prompt you to grant Reminders, Messages, and Notes permissions to Terminal/iTerm.
 
 ## Installation
 
@@ -200,6 +205,9 @@ make install-deps
 This installs:
 - [`remindctl`](https://github.com/keith/reminders-cli) — Apple Reminders CLI
 - [`imsg`](https://github.com/chrisbrandow/imsg) — Apple Messages CLI
+
+MAG also installs:
+- [`macnotesapp`](https://github.com/RhetTbull/macnotesapp) — Apple Notes Python interface
 
 ### 2. Install MAG
 
@@ -237,6 +245,8 @@ MAG_MESSAGES_READ=true           # Enable/disable reading messages
 MAG_MESSAGES_ATTACHMENTS=true    # Enable/disable attachment downloads
 MAG_REMINDERS_READ=true          # Enable/disable reading reminders
 MAG_REMINDERS_WRITE=true         # Enable/disable writing reminders
+MAG_NOTES_READ=true              # Enable/disable reading notes
+MAG_NOTES_WRITE=true             # Enable/disable creating notes
 
 # Security restrictions (optional)
 MAG_MESSAGES_SEND_ALLOWLIST=+15551234567,user@example.com  # Limit recipients
@@ -282,6 +292,13 @@ curl -X POST \
   -H "Content-Type: application/json" \
   -d '{"to": "+15551234567", "text": "On my way!"}' \
   http://localhost:8123/v1/messages/send
+
+# Create a note
+curl -X POST \
+  -H "X-API-Key: your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Trip ideas", "body": "<p>Portland, Seattle, Vancouver</p>"}' \
+  http://localhost:8123/v1/notes
 ```
 
 ### Running as a Service (launchd)
@@ -337,7 +354,7 @@ make service-uninstall # Remove the plist
 ```
 
 > **Security Notes:**
-> - The service runs as your user (LaunchAgent), which is required for TCC permissions. Do not use LaunchDaemons (system-level) as they cannot access Reminders/Messages.
+> - The service runs as your user (LaunchAgent), which is required for TCC permissions. Do not use LaunchDaemons (system-level) as they cannot access Reminders/Messages/Notes.
 > - `make service-install` sets the plist to mode 600 (owner-only) to protect your API key.
 > - Logs are stored in `logs/` within the project directory, not world-readable `/tmp`.
 
@@ -405,6 +422,29 @@ Interactive API documentation is available at `/docs` (Swagger UI) and `/redoc` 
 | GET | `/v1/messages/attachments/download` | Download an attachment file |
 | GET | `/v1/messages/attachments/info` | Get attachment file info |
 
+### Notes API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/v1/notes` | List/search notes |
+| GET | `/v1/notes/{id}` | Fetch a note by ID |
+| POST | `/v1/notes` | Create a note |
+| GET | `/v1/notes/accounts` | List Notes accounts |
+| GET | `/v1/notes/folders` | List top-level folders for an account |
+
+**Query Options:**
+- `account` — Filter by account name; may be repeated
+- `name` — Filter by note name; may be repeated
+- `body` — Filter by HTML body text; may be repeated
+- `text` — Filter by plaintext; may be repeated
+- `password_protected` — Filter by password-protected status
+- `limit` — Maximum notes to return, default `50`
+- `offset` — Number of matching notes to skip
+
+**Notes Limitations:**
+
+MAG uses `macnotesapp` for Notes.app access. The first Notes API pass supports listing, searching, fetching, and creating notes. Locked password-protected notes are not supported, attachments are limited by `macnotesapp`, only top-level folders are accessible, and tags may be stripped from body content or treated as plain text.
+
 **Attachments:**
 
 To download attachments (photos, files) from messages:
@@ -448,6 +488,7 @@ MAG includes portable skill definitions that enable AI agents to use the API wit
 |-------|------|-------------|
 | mag-reminders | `skills/mag-reminders/SKILL.md` | Apple Reminders management |
 | mag-messages | `skills/mag-messages/SKILL.md` | Apple Messages (iMessage) management |
+| mag-notes | `skills/mag-notes/SKILL.md` | Apple Notes management |
 
 Skills are compatible with:
 - **OpenClaw (formerly Clawdbot/Moltbot)** — Via YAML frontmatter metadata
@@ -468,6 +509,7 @@ make claude-skill-check
 # Then in Claude Code, use:
 #   /add ~/.claude/skills/mag-reminders/SKILL.md
 #   /add ~/.claude/skills/mag-messages/SKILL.md
+#   /add ~/.claude/skills/mag-notes/SKILL.md
 ```
 
 **For OpenClaw (Manual):**
@@ -476,6 +518,8 @@ make claude-skill-check
 # Clone and copy to your agent's skills directory
 git clone https://github.com/ericblue/mac-agent-gateway.git
 cp -r mac-agent-gateway/skills/mag-reminders ~/.moltbot/skills/
+cp -r mac-agent-gateway/skills/mag-messages ~/.moltbot/skills/
+cp -r mac-agent-gateway/skills/mag-notes ~/.moltbot/skills/
 # Or: cp -r mac-agent-gateway/skills/mag-reminders ~/.openclaw/skills/
 ```
 
@@ -489,11 +533,19 @@ git clone https://github.com/ericblue/mac-agent-gateway.git ~/Development/mac-ag
 
 > "Install the skill from ~/Development/mac-agent-gateway/skills/mag-reminders/SKILL.md"
 
+Or:
+
+> "Install the skill from ~/Development/mac-agent-gateway/skills/mag-notes/SKILL.md"
+
 **Direct from GitHub:**
 
 Prompt your agent:
 
 > "Install the mag-reminders skill from https://github.com/ericblue/mac-agent-gateway"
+
+Or:
+
+> "Install the mag-notes skill from https://github.com/ericblue/mac-agent-gateway"
 
 ### OpenClaw Installation
 
@@ -538,6 +590,13 @@ Add this to `~/.clawdbot/clawdbot.json`:
         }
       },
       "mag-messages": {
+        "enabled": true,
+        "env": {
+          "MAG_URL": "http://localhost:8124",
+          "MAG_API_KEY": "your-secret-api-key-here"
+        }
+      },
+      "mag-notes": {
         "enabled": true,
         "env": {
           "MAG_URL": "http://localhost:8124",
@@ -708,7 +767,7 @@ See **[EXAMPLES.md](EXAMPLES.md)** for 21+ real-world prompts you can use with A
 
 If you see "access denied" errors:
 
-1. Open **System Preferences → Privacy & Security → Reminders** (or Messages)
+1. Open **System Preferences → Privacy & Security → Reminders** (or Messages/Automation for Notes)
 2. Ensure Terminal/iTerm is checked
 3. Restart the gateway
 
@@ -721,6 +780,7 @@ make install-deps
 # Verify installation
 which remindctl
 which imsg
+python -c "import macnotesapp"
 ```
 
 ### Connection Refused
@@ -751,6 +811,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 - [remindctl](https://github.com/keith/reminders-cli) — Apple Reminders CLI by Keith Smiley
 - [imsg](https://github.com/chrisbrandow/imsg) — Apple Messages CLI by Chris Brandow
+- [macnotesapp](https://github.com/RhetTbull/macnotesapp) — Apple Notes Python interface by Rhet Turnbull
 
 ## Version History
 
@@ -803,7 +864,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 **Mac Agent Gateway (MAG)** is a local macOS HTTP API gateway that enables AI agents running in sandboxed environments to safely access Apple-protected system services.
 
-This project addresses a fundamental challenge: AI agents running in VMs, containers, or on remote hosts cannot access macOS TCC-protected services like Reminders and Messages. MAG bridges this gap by running on your Mac as a secure HTTP gateway, handling all permissions and CLI execution while exposing clean, agent-friendly REST endpoints.
+This project addresses a fundamental challenge: AI agents running in VMs, containers, or on remote hosts cannot access macOS TCC-protected services like Reminders, Messages, and Notes. MAG bridges this gap by running on your Mac as a secure HTTP gateway, handling all permissions and CLI execution while exposing clean, agent-friendly REST endpoints.
 
 ### Design Principles
 
@@ -815,6 +876,3 @@ This project addresses a fundamental challenge: AI agents running in VMs, contai
 **Created by [Eric Blue](https://about.ericblue.com)**
 
 **Repository:** [github.com/ericblue/mac-agent-gateway](https://github.com/ericblue/mac-agent-gateway)
-
-
-

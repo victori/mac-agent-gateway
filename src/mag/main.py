@@ -20,7 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from mag import __version__
 from mag.config import Capabilities, get_capabilities, get_settings
-from mag.routers import messages, reminders
+from mag.routers import messages, notes, reminders
 
 # Access logger for HTTP requests (separate from app logger)
 access_logger = logging.getLogger("mag.access")
@@ -132,7 +132,7 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 
 app = FastAPI(
     title="Mac Agent Gateway",
-    description="Local macOS HTTP API gateway for Apple Reminders and Messages",
+    description="Local macOS HTTP API gateway for Apple Reminders, Messages, and Notes",
     version=__version__,
     docs_url=None,  # Disable default, we'll serve custom
     redoc_url="/redoc",
@@ -171,6 +171,7 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 app.include_router(reminders.router, prefix="/v1", tags=["reminders"])
 app.include_router(messages.router, prefix="/v1", tags=["messages"])
+app.include_router(notes.router, prefix="/v1", tags=["notes"])
 
 
 # Placeholder values that should block startup
@@ -271,6 +272,10 @@ async def startup_event() -> None:
         disabled.append("messages.read")
     if not caps.reminders.write:
         disabled.append("reminders.write")
+    if not caps.notes.read:
+        disabled.append("notes.read")
+    if not caps.notes.write:
+        disabled.append("notes.write")
     if disabled:
         logger.info("Disabled capabilities: %s", ", ".join(disabled))
     

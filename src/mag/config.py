@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     reminders_read: bool = True  # GET /reminders, /reminders/lists
     reminders_write: bool = True  # POST/PATCH/DELETE reminders and lists
 
+    # Notes capabilities
+    notes_read: bool = True  # GET /notes, /notes/{id}, /notes/accounts, /notes/folders
+    notes_write: bool = True  # POST /notes
+
 
 class Capabilities(BaseModel):
     """Structured capabilities response."""
@@ -106,8 +110,13 @@ class Capabilities(BaseModel):
         read: bool
         write: bool
 
+    class NotesCapabilities(BaseModel):
+        read: bool
+        write: bool
+
     messages: MessagesCapabilities
     reminders: RemindersCapabilities
+    notes: NotesCapabilities
 
 
 @lru_cache
@@ -134,5 +143,9 @@ def get_capabilities() -> Capabilities:
         reminders=Capabilities.RemindersCapabilities(
             read=settings.reminders_read,
             write=settings.reminders_write,
+        ),
+        notes=Capabilities.NotesCapabilities(
+            read=settings.notes_read,
+            write=settings.notes_write,
         ),
     )
