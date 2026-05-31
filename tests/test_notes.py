@@ -11,7 +11,16 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from mag.config import get_settings
-from mag.models.notes import Note, NoteAccount, NoteAttachment, NoteCreate, NoteFolder
+from mag.models.notes import (
+    Note,
+    NoteAccount,
+    NoteAttachment,
+    NoteCreate,
+    NoteFolder,
+    NoteFolderCreate,
+    NoteMove,
+    NoteUpdate,
+)
 
 
 class TestNoteModels:
@@ -57,6 +66,26 @@ class TestNoteModels:
         )
 
         assert note.attachments[0].name == "file.txt"
+
+    def test_note_update_requires_at_least_one_field(self) -> None:
+        """Should reject empty note update payloads."""
+        with pytest.raises(ValidationError):
+            NoteUpdate()
+
+    def test_note_update_accepts_name_or_body(self) -> None:
+        """Should accept either title or body updates."""
+        assert NoteUpdate(name="New title").name == "New title"
+        assert NoteUpdate(body="<p>New body</p>").body == "<p>New body</p>"
+
+    def test_note_move_requires_folder(self) -> None:
+        """Should require a destination folder."""
+        with pytest.raises(ValidationError):
+            NoteMove(folder="")
+
+    def test_note_folder_create_requires_name(self) -> None:
+        """Should require a folder name."""
+        with pytest.raises(ValidationError):
+            NoteFolderCreate(name="")
 
 
 class TestNotesService:
@@ -193,6 +222,102 @@ class TestNotesService:
         app.account.assert_called_once_with(None)
         assert [folder.name for folder in folders] == ["Notes", "Travel"]
 
+    async def test_update_note_sets_name_and_body(self) -> None:
+        """Should update note title and body, then return the parsed note."""
+        from mag.services.notesapp import update_note
+
+        raw_note = SimpleNamespace(
+            id="note-1", name="Old", body="<p>Old</p>", account="iCloud", folder="Notes"
+        )
+        app = Mock()
+        app.notes.return_value = [raw_note]
+
+        with patch("mag.services.notesapp._notes_app", return_value=app):
+            note = await update_note("note-1", name="New", body="<p>New</p>")
+
+        assert raw_note.name == "New"
+        assert raw_note.body == "<p>New</p>"
+        assert note.id == "note-1"
+
+    async def test_update_note_returns_none_when_missing(self) -> None:
+        """Should return None when updating a missing note."""
+        from mag.services.notesapp import update_note
+
+        app = Mock()
+        app.notes.return_value = []
+
+        with patch("mag.services.notesapp._notes_app", return_value=app):
+            note = await update_note("missing", name="New", body=None)
+
+        assert note is None
+
+    async def test_move_note_calls_note_move(self) -> None:
+        """Should move a note to the requested folder."""
+        from mag.services.notesapp import move_note
+
+        raw_note = Mock()
+        raw_note.id = "note-1"
+        raw_note.name = "Trip"
+        raw_note.account = "iCloud"
+        raw_note.folder = "Archive"
+        raw_note.body = None
+        raw_note.plaintext = None
+        raw_note.attachments = []
+        app = Mock()
+        app.notes.return_value = [raw_note]
+
+        with patch("mag.services.notesapp._notes_app", return_value=app):
+            note = await move_note("note-1", folder="Archive", account="iCloud")
+
+        app.account.assert_called_once_with("iCloud")
+        raw_note.move.assert_called_once_with("Archive")
+        assert note.id == "note-1"
+
+    async def test_delete_note_calls_note_delete(self) -> None:
+        """Should delete a note and return a status dictionary."""
+        from mag.services.notesapp import delete_note
+
+        raw_note = Mock()
+        app = Mock()
+        app.notes.return_value = [raw_note]
+
+        with patch("mag.services.notesapp._notes_app", return_value=app):
+            result = await delete_note("note-1")
+
+        raw_note.delete.assert_called_once_with()
+        assert result == {"status": "deleted", "id": "note-1"}
+
+    async def test_create_folder_returns_folder_model(self) -> None:
+        """Should create a folder through the selected account."""
+        from mag.services.notesapp import create_folder
+
+        account = Mock()
+        account.make_folder.return_value = SimpleNamespace(name="Work")
+        app = Mock()
+        app.account.return_value = account
+
+        with patch("mag.services.notesapp._notes_app", return_value=app):
+            folder = await create_folder(name="Work", account="iCloud")
+
+        app.account.assert_called_once_with("iCloud")
+        account.make_folder.assert_called_once_with("Work")
+        assert folder.name == "Work"
+
+    async def test_delete_folder_returns_status(self) -> None:
+        """Should delete a folder through the selected account."""
+        from mag.services.notesapp import delete_folder
+
+        account = Mock()
+        app = Mock()
+        app.account.return_value = account
+
+        with patch("mag.services.notesapp._notes_app", return_value=app):
+            result = await delete_folder(name="Work", account="iCloud")
+
+        app.account.assert_called_once_with("iCloud")
+        account.delete_folder.assert_called_once_with("Work")
+        assert result == {"status": "deleted", "name": "Work"}
+
     def test_missing_macnotesapp_error_has_hint(self) -> None:
         """Should include an install hint when macnotesapp cannot be imported."""
         from mag.services.notesapp import NotesAppError, _notes_app
@@ -265,6 +390,86 @@ class TestNotesRouter:
             attachments=[],
         )
 
+    def test_update_note_success(self, client: TestClient, auth_headers: dict) -> None:
+        """Should update and return a note."""
+        note = Note(id="note-1", name="New", account="iCloud", folder="Notes")
+        with patch("mag.routers.notes.notesapp.update_note", new_callable=AsyncMock) as mock:
+            mock.return_value = note
+            response = client.patch(
+                "/v1/notes/note-1",
+                headers=auth_headers,
+                json={"name": "New", "body": "<p>New</p>"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["name"] == "New"
+        mock.assert_called_once_with("note-1", name="New", body="<p>New</p>")
+
+    def test_update_note_returns_404_when_missing(
+        self, client: TestClient, auth_headers: dict
+    ) -> None:
+        """Should return 404 when updating a missing note."""
+        with patch("mag.routers.notes.notesapp.update_note", new_callable=AsyncMock) as mock:
+            mock.return_value = None
+            response = client.patch(
+                "/v1/notes/missing",
+                headers=auth_headers,
+                json={"name": "New"},
+            )
+
+        assert response.status_code == 404
+
+    def test_move_note_success(self, client: TestClient, auth_headers: dict) -> None:
+        """Should move and return a note."""
+        note = Note(id="note-1", name="Trip", account="iCloud", folder="Archive")
+        with patch("mag.routers.notes.notesapp.move_note", new_callable=AsyncMock) as mock:
+            mock.return_value = note
+            response = client.post(
+                "/v1/notes/note-1/move",
+                headers=auth_headers,
+                json={"folder": "Archive", "account": "iCloud"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["folder"] == "Archive"
+        mock.assert_called_once_with("note-1", folder="Archive", account="iCloud")
+
+    def test_delete_note_success(self, client: TestClient, auth_headers: dict) -> None:
+        """Should delete a note."""
+        with patch("mag.routers.notes.notesapp.delete_note", new_callable=AsyncMock) as mock:
+            mock.return_value = {"status": "deleted", "id": "note-1"}
+            response = client.delete("/v1/notes/note-1", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "deleted", "id": "note-1"}
+
+    def test_create_folder_success(self, client: TestClient, auth_headers: dict) -> None:
+        """Should create a Notes folder."""
+        with patch("mag.routers.notes.notesapp.create_folder", new_callable=AsyncMock) as mock:
+            mock.return_value = NoteFolder(name="Work")
+            response = client.post(
+                "/v1/notes/folders",
+                headers=auth_headers,
+                json={"name": "Work", "account": "iCloud"},
+            )
+
+        assert response.status_code == 201
+        assert response.json() == {"name": "Work"}
+        mock.assert_called_once_with(name="Work", account="iCloud")
+
+    def test_delete_folder_success(self, client: TestClient, auth_headers: dict) -> None:
+        """Should delete a Notes folder."""
+        with patch("mag.routers.notes.notesapp.delete_folder", new_callable=AsyncMock) as mock:
+            mock.return_value = {"status": "deleted", "name": "Work"}
+            response = client.delete(
+                "/v1/notes/folders/Work?account=iCloud",
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "deleted", "name": "Work"}
+        mock.assert_called_once_with(name="Work", account="iCloud")
+
     def test_list_accounts_success(self, client: TestClient, auth_headers: dict) -> None:
         """Should list Notes accounts."""
         with patch("mag.routers.notes.notesapp.list_accounts", new_callable=AsyncMock) as mock:
@@ -323,6 +528,25 @@ class TestNotesCapabilities:
 
         assert response.status_code == 403
         assert response.json()["detail"]["error"] == "Capability 'notes.read' is disabled"
+
+    def test_disabled_notes_write_returns_403(
+        self, client: TestClient, auth_headers: dict
+    ) -> None:
+        """Should block write endpoints when Notes write is disabled."""
+        os.environ["MAG_NOTES_WRITE"] = "false"
+        get_settings.cache_clear()
+        try:
+            response = client.patch(
+                "/v1/notes/note-1",
+                headers=auth_headers,
+                json={"name": "New"},
+            )
+        finally:
+            os.environ.pop("MAG_NOTES_WRITE", None)
+            get_settings.cache_clear()
+
+        assert response.status_code == 403
+        assert response.json()["detail"]["error"] == "Capability 'notes.write' is disabled"
 
 
 class TestNotesAttachmentPolicy:

@@ -7,11 +7,11 @@ repository: https://github.com/ericblue/mac-agent-gateway
 allowed-tools: Shell(curl:*) Read
 integrity:
   algorithm: sha256
-  content_hash: "2ac1d58745d507d854a5e08960935ddfb118899bff8d2b1506f5dd48e73e2c55"
+  content_hash: "509101fb7cb323058e6a917a9382fe00c8ad803a92f03dbc4ce49ce4278f501c"
 signature:
   signer_key: "kTzOZZ+UA+XqMAS56Khnymb91KslcyvCNDKjpP4l3RY="
-  value: "8SVMC/KzW3KNTsOhvuBJGh1EV0JnjNvgzSf/DxtkOmhoyqE4OccRsGC8dpr1Uix0hS1tIvUfaNSrdllTPz7qBw=="
-  signed_at: "2026-05-31T20:56:36Z"
+  value: "q3ZvnmjHrHf9lk/yJDo7qpWv2gAUlatgDaO4WuvX8AC5VLUYBmW3FxSdBXQi7nZiUkGfq5pNLCTjLGrmGSQ6Bg=="
+  signed_at: "2026-05-31T23:11:34Z"
 ---
 
 ## REQUIRED: Verify Before Use
@@ -113,7 +113,7 @@ The gateway administrator can enable or disable Notes operations with:
 
 ## Safety Rules
 
-- Do not create notes unless the user explicitly asks for a new note or clearly confirms the note content.
+- Do not create, update, move, or delete notes/folders unless the user explicitly asks or clearly confirms the operation.
 - Treat note contents as private user data. Summarize only what the user asks for.
 - Prefer `limit` when listing or searching notes to avoid returning excessive private data.
 - Do not request attachment paths from outside user-approved directories. The gateway may reject paths outside `MAG_ATTACHMENT_ALLOWED_DIRS`.
@@ -221,6 +221,44 @@ curl -X POST \
   "$MAG_URL/v1/notes"
 ```
 
+### Update a Note
+
+```bash
+curl -X PATCH \
+  -H "X-API-Key: $MAG_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Updated title", "body": "<p>Updated body</p>"}' \
+  "$MAG_URL/v1/notes/x-coredata%3A%2F%2F..."
+```
+
+At least one of `name` or `body` is required. URL-encode the note ID.
+
+### Move a Note
+
+```bash
+curl -X POST \
+  -H "X-API-Key: $MAG_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"folder": "Archive", "account": "iCloud"}' \
+  "$MAG_URL/v1/notes/x-coredata%3A%2F%2F.../move"
+```
+
+`folder` is required. `account` is optional and is used to resolve the destination account.
+
+### Delete a Note
+
+```bash
+curl -X DELETE \
+  -H "X-API-Key: $MAG_API_KEY" \
+  "$MAG_URL/v1/notes/x-coredata%3A%2F%2F..."
+```
+
+**Response:**
+
+```json
+{"status": "deleted", "id": "x-coredata://..."}
+```
+
 ### List Accounts
 
 ```bash
@@ -252,6 +290,32 @@ If `account` is omitted, the gateway uses the default Notes account.
   {"name": "Work"},
   {"name": "Travel"}
 ]
+```
+
+### Create a Folder
+
+```bash
+curl -X POST \
+  -H "X-API-Key: $MAG_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Work", "account": "iCloud"}' \
+  "$MAG_URL/v1/notes/folders"
+```
+
+`account` is optional. If omitted, the gateway uses the default Notes account.
+
+### Delete a Folder
+
+```bash
+curl -X DELETE \
+  -H "X-API-Key: $MAG_API_KEY" \
+  "$MAG_URL/v1/notes/folders/Work?account=iCloud"
+```
+
+**Response:**
+
+```json
+{"status": "deleted", "name": "Work"}
 ```
 
 ## Error Handling
@@ -290,4 +354,4 @@ If `account` is omitted, the gateway uses the default Notes account.
 
 MAG uses `macnotesapp` for Notes.app access. Locked password-protected notes are not supported, attachments are limited by `macnotesapp`, only top-level folders are accessible, and tags may be stripped from body content or treated as plain text.
 
-This first-pass Notes skill supports listing, searching, fetching, account/folder discovery, and creating notes. It does not edit, rename, move, or delete notes.
+This Notes skill supports listing, searching, fetching, account/folder discovery, creating, updating, moving, and deleting notes plus top-level folder create/delete. It does not provide attachment save/download endpoints or folder rename.

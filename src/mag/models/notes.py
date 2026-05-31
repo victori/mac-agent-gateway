@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class NoteAttachment(BaseModel):
@@ -41,6 +41,27 @@ class NoteCreate(BaseModel):
     attachments: list[str] = Field(default_factory=list, description="Attachment file paths")
 
 
+class NoteUpdate(BaseModel):
+    """Request model for updating a note."""
+
+    name: str | None = Field(None, min_length=1, description="New note title")
+    body: str | None = Field(None, min_length=1, description="New HTML note body")
+
+    @model_validator(mode="after")
+    def require_update_field(self) -> "NoteUpdate":
+        """Require at least one update field."""
+        if self.name is None and self.body is None:
+            raise ValueError("At least one of name or body must be provided")
+        return self
+
+
+class NoteMove(BaseModel):
+    """Request model for moving a note."""
+
+    folder: str = Field(..., min_length=1, description="Destination top-level folder")
+    account: str | None = Field(None, description="Notes account name")
+
+
 class NoteAccount(BaseModel):
     """Response model for a Notes account."""
 
@@ -51,6 +72,13 @@ class NoteFolder(BaseModel):
     """Response model for a Notes folder."""
 
     name: str = Field(..., description="Folder name")
+
+
+class NoteFolderCreate(BaseModel):
+    """Request model for creating a top-level Notes folder."""
+
+    name: str = Field(..., min_length=1, description="Folder name")
+    account: str | None = Field(None, description="Notes account name")
 
 
 class NotesError(BaseModel):

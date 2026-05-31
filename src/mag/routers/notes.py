@@ -6,7 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from mag.auth import verify_api_key
 from mag.config import get_settings
-from mag.models.notes import Note, NoteAccount, NoteCreate, NoteFolder
+from mag.models.notes import (
+    Note,
+    NoteAccount,
+    NoteCreate,
+    NoteFolder,
+    NoteFolderCreate,
+    NoteMove,
+    NoteUpdate,
+)
 from mag.services import notesapp
 from mag.services.notesapp import NotesAppError
 
@@ -117,6 +125,29 @@ async def list_note_folders(
         raise _handle_notes_error(e)
 
 
+@router.post("/folders", response_model=NoteFolder, status_code=201)
+async def create_note_folder(data: NoteFolderCreate) -> NoteFolder:
+    """Create a top-level Notes folder."""
+    _require_capability("write")
+    try:
+        return await notesapp.create_folder(name=data.name, account=data.account)
+    except NotesAppError as e:
+        raise _handle_notes_error(e)
+
+
+@router.delete("/folders/{folder_name}")
+async def delete_note_folder(
+    folder_name: str,
+    account: str | None = Query(default=None, description="Account name"),
+) -> dict[str, str]:
+    """Delete a top-level Notes folder."""
+    _require_capability("write")
+    try:
+        return await notesapp.delete_folder(name=folder_name, account=account)
+    except NotesAppError as e:
+        raise _handle_notes_error(e)
+
+
 @router.get("/{note_id}", response_model=Note)
 async def get_note(note_id: str) -> Note:
     """Get a single note by id."""
@@ -128,6 +159,45 @@ async def get_note(note_id: str) -> Note:
     if note is None:
         raise HTTPException(status_code=404, detail=f"Note {note_id} not found")
     return note
+
+
+@router.patch("/{note_id}", response_model=Note)
+async def update_note(note_id: str, data: NoteUpdate) -> Note:
+    """Update a note's title and/or body."""
+    _require_capability("write")
+    try:
+        note = await notesapp.update_note(note_id, name=data.name, body=data.body)
+    except NotesAppError as e:
+        raise _handle_notes_error(e)
+    if note is None:
+        raise HTTPException(status_code=404, detail=f"Note {note_id} not found")
+    return note
+
+
+@router.post("/{note_id}/move", response_model=Note)
+async def move_note(note_id: str, data: NoteMove) -> Note:
+    """Move a note to a top-level folder."""
+    _require_capability("write")
+    try:
+        note = await notesapp.move_note(note_id, folder=data.folder, account=data.account)
+    except NotesAppError as e:
+        raise _handle_notes_error(e)
+    if note is None:
+        raise HTTPException(status_code=404, detail=f"Note {note_id} not found")
+    return note
+
+
+@router.delete("/{note_id}")
+async def delete_note(note_id: str) -> dict[str, str]:
+    """Delete a note."""
+    _require_capability("write")
+    try:
+        result = await notesapp.delete_note(note_id)
+    except NotesAppError as e:
+        raise _handle_notes_error(e)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Note {note_id} not found")
+    return result
 
 
 @router.post("", response_model=Note, status_code=201)

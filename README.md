@@ -152,7 +152,7 @@ curl -H "X-API-Key: $KEY" http://100.x.x.x:8123/health
 
 - **Apple Reminders API** — Full CRUD: create, list, update, complete, delete reminders and lists
 - **Apple Messages API** — Send/reply to iMessages, list threads, search messages, extract links, stream new messages
-- **Apple Notes API** — List, search, fetch, and create notes through Notes.app
+- **Apple Notes API** — List, search, fetch, create, update, move, and delete notes through Notes.app
 - **Attachment Downloads** — Download photos and files from messages via secure REST API
 - **OpenAPI/Swagger** — Auto-generated docs at `/docs` and `/openapi.json`
 - **Agent Skills** — Portable skill definitions for OpenClaw (formerly Clawdbot/Moltbot), Cursor, and other agents
@@ -429,8 +429,13 @@ Interactive API documentation is available at `/docs` (Swagger UI) and `/redoc` 
 | GET | `/v1/notes` | List/search notes |
 | GET | `/v1/notes/{id}` | Fetch a note by ID |
 | POST | `/v1/notes` | Create a note |
+| PATCH | `/v1/notes/{id}` | Update a note title and/or body |
+| POST | `/v1/notes/{id}/move` | Move a note to a top-level folder |
+| DELETE | `/v1/notes/{id}` | Delete a note |
 | GET | `/v1/notes/accounts` | List Notes accounts |
 | GET | `/v1/notes/folders` | List top-level folders for an account |
+| POST | `/v1/notes/folders` | Create a top-level folder |
+| DELETE | `/v1/notes/folders/{name}` | Delete a top-level folder |
 
 **Query Options:**
 - `account` — Filter by account name; may be repeated
@@ -443,7 +448,7 @@ Interactive API documentation is available at `/docs` (Swagger UI) and `/redoc` 
 
 **Notes Limitations:**
 
-MAG uses `macnotesapp` for Notes.app access. The first Notes API pass supports listing, searching, fetching, and creating notes. Locked password-protected notes are not supported, attachments are limited by `macnotesapp`, only top-level folders are accessible, and tags may be stripped from body content or treated as plain text.
+MAG uses `macnotesapp` for Notes.app access. The Notes API supports listing, searching, fetching, creating, updating, moving, and deleting notes plus creating and deleting top-level folders. Locked password-protected notes are not supported, attachments are limited by `macnotesapp`, only top-level folders are accessible, and tags may be stripped from body content or treated as plain text.
 
 **Attachments:**
 

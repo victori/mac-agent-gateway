@@ -173,6 +173,60 @@ async def create_note(
     return _parse_note(raw)
 
 
+async def update_note(
+    note_id: str,
+    name: str | None = None,
+    body: str | None = None,
+) -> Note | None:
+    """Update a note's title and/or body."""
+    try:
+        notes = _notes_app().notes(id=[note_id])
+        if not notes:
+            return None
+        note = notes[0]
+        if name is not None:
+            note.name = name
+        if body is not None:
+            note.body = body
+    except NotesAppError:
+        raise
+    except Exception as e:
+        raise NotesAppError("Failed to update note", details=str(e)) from e
+    return _parse_note(note)
+
+
+async def move_note(note_id: str, folder: str, account: str | None = None) -> Note | None:
+    """Move a note to a different top-level folder."""
+    try:
+        app = _notes_app()
+        notes = app.notes(id=[note_id])
+        if not notes:
+            return None
+        note = notes[0]
+        if account is not None:
+            app.account(account)
+        note.move(folder)
+    except NotesAppError:
+        raise
+    except Exception as e:
+        raise NotesAppError("Failed to move note", details=str(e)) from e
+    return _parse_note(note)
+
+
+async def delete_note(note_id: str) -> dict[str, str] | None:
+    """Delete a note."""
+    try:
+        notes = _notes_app().notes(id=[note_id])
+        if not notes:
+            return None
+        notes[0].delete()
+    except NotesAppError:
+        raise
+    except Exception as e:
+        raise NotesAppError("Failed to delete note", details=str(e)) from e
+    return {"status": "deleted", "id": note_id}
+
+
 async def list_accounts() -> list[NoteAccount]:
     """List Notes accounts."""
     try:
@@ -192,3 +246,25 @@ async def list_folders(account: str | None = None) -> list[NoteFolder]:
     except Exception as e:
         raise NotesAppError("Failed to list folders", details=str(e)) from e
     return [NoteFolder(name=str(folder)) for folder in folders]
+
+
+async def create_folder(name: str, account: str | None = None) -> NoteFolder:
+    """Create a top-level Notes folder."""
+    try:
+        folder = _notes_app().account(account).make_folder(name)
+    except NotesAppError:
+        raise
+    except Exception as e:
+        raise NotesAppError("Failed to create folder", details=str(e)) from e
+    return NoteFolder(name=str(_get_attr(folder, "name", name)))
+
+
+async def delete_folder(name: str, account: str | None = None) -> dict[str, str]:
+    """Delete a top-level Notes folder."""
+    try:
+        _notes_app().account(account).delete_folder(name)
+    except NotesAppError:
+        raise
+    except Exception as e:
+        raise NotesAppError("Failed to delete folder", details=str(e)) from e
+    return {"status": "deleted", "name": name}
