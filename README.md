@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-009688.svg)](https://fastapi.tiangolo.com)
 
-A local macOS HTTP API gateway that exposes Apple-protected capabilities (Reminders, Messages, Notes) via a stable, agent-friendly REST API.
+A local macOS HTTP API gateway that exposes Apple-protected capabilities (Reminders, Messages, Notes, and iCloud Drive) via a stable, agent-friendly REST API.
 
 ## Why MAG?
 
@@ -18,7 +18,7 @@ MAG solves this by running on your Mac as a secure HTTP gateway, handling all TC
 
 ### What This Means for You
 
-**In plain terms:** MAG lets AI assistants work with your Apple Reminders, Messages, and Notes—apps that are normally locked to your Mac—in a controlled, secure way.
+**In plain terms:** MAG lets AI assistants work with your Apple Reminders, Messages, Notes, and files stored in Mobile Documents (iCloud Drive)—apps and data that are normally locked to your Mac—in a controlled, secure way.
 
 - **Your AI assistant can now help with real tasks** — "Add a reminder for tomorrow", "Find the links Jane sent me last week", "Text me my todo list"
 - **Works with any AI agent** — OpenClaw, Claude Code, Cursor, or any tool that can make HTTP requests
@@ -153,6 +153,7 @@ curl -H "X-API-Key: $KEY" http://100.x.x.x:8123/health
 - **Apple Reminders API** — Full CRUD: create, list, update, complete, delete reminders and lists
 - **Apple Messages API** — Send/reply to iMessages, list threads, search messages, extract links, stream new messages
 - **Apple Notes API** — List, search, fetch, create, update, move, and delete notes through Notes.app
+- **iCloud Drive API** — List directories and read, create, replace, move, or delete files across `~/Library/Mobile Documents`
 - **Attachment Downloads** — Download photos and files from messages via secure REST API
 - **OpenAPI/Swagger** — Auto-generated docs at `/docs` and `/openapi.json`
 - **Agent Skills** — Portable skill definitions for OpenClaw (formerly Clawdbot/Moltbot), Cursor, and other agents
@@ -192,7 +193,7 @@ The gateway is now running at `http://localhost:8123`. Visit `/docs` for the int
 - **Python 3.11+**
 - **Homebrew**
 
-When first running, macOS will prompt you to grant Reminders, Messages, and Notes permissions to Terminal/iTerm.
+When first running, macOS will prompt you to grant Reminders, Messages, and Notes permissions to Terminal/iTerm. Accessing iCloud Drive via the API may additionally prompt for Files and Folders or Full Disk Access depending on how MAG is launched and your macOS privacy settings.
 
 ## Installation
 
@@ -247,6 +248,8 @@ MAG_REMINDERS_READ=true          # Enable/disable reading reminders
 MAG_REMINDERS_WRITE=true         # Enable/disable writing reminders
 MAG_NOTES_READ=true              # Enable/disable reading notes
 MAG_NOTES_WRITE=true             # Enable/disable creating notes
+MAG_ICLOUD_READ=true             # Enable/disable directory listing and file reads
+MAG_ICLOUD_WRITE=true            # Enable/disable file create/replace/move/delete
 
 # Security restrictions (optional)
 MAG_MESSAGES_SEND_ALLOWLIST=+15551234567,user@example.com  # Limit recipients
@@ -450,6 +453,50 @@ Interactive API documentation is available at `/docs` (Swagger UI) and `/redoc` 
 
 MAG uses `macnotesapp` for Notes.app access. The Notes API supports listing, searching, fetching, creating, updating, moving, and deleting notes plus creating and deleting top-level folders. Locked password-protected notes are not supported, attachments are limited by `macnotesapp`, only top-level folders are accessible, and tags may be stripped from body content or treated as plain text.
 
+### iCloud Drive API
+
+All `{path}` values are relative to `~/Library/Mobile Documents`. This includes the user-visible iCloud Drive container at `com~apple~CloudDocs` and application-specific containers.
+
+> **Security:** Application containers can contain sensitive or app-private data. Enabling `MAG_ICLOUD_READ` or `MAG_ICLOUD_WRITE` grants authenticated clients access across the full Mobile Documents tree, not only `com~apple~CloudDocs`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/v1/icloud` | List the Mobile Documents root |
+| GET | `/v1/icloud/{path}` | List a directory or stream a file |
+| PUT | `/v1/icloud/{path}` | Create or fully replace a file from the raw body |
+| PATCH | `/v1/icloud/{path}` | Rename or move a file |
+| DELETE | `/v1/icloud/{path}` | Delete a file |
+
+```bash
+# List the user-visible iCloud Drive root
+curl -H "X-API-Key: $KEY" \
+  "http://localhost:8123/v1/icloud/com~apple~CloudDocs"
+
+# Upload or replace a binary file
+curl -X PUT -H "X-API-Key: $KEY" \
+  --data-binary @report.pdf \
+  "http://localhost:8123/v1/icloud/com~apple~CloudDocs/Reports/report.pdf"
+
+# Download a file
+curl -H "X-API-Key: $KEY" \
+  "http://localhost:8123/v1/icloud/com~apple~CloudDocs/Reports/report.pdf" \
+  --output report.pdf
+
+# Rename or move a file
+curl -X PATCH -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"destination":"com~apple~CloudDocs/Archive/report.pdf"}' \
+  "http://localhost:8123/v1/icloud/com~apple~CloudDocs/Reports/report.pdf"
+```
+
+**iCloud Drive Safety And Limitations:**
+
+- Directory access is read-only and non-recursive; directory create, move, rename, and delete are blocked.
+- Symbolic links, traversal components, absolute paths, and special files are blocked.
+- `PUT` requires an existing parent directory and atomically replaces regular files.
+- `PATCH` requires a full destination filename and returns `409` if that destination exists.
+- Reading an evicted iCloud file may cause macOS to download it. MAG does not expose sync state, version history, sharing links, or conflict resolution.
+
+>>>>>>> icloud
 **Attachments:**
 
 To download attachments (photos, files) from messages:
@@ -680,6 +727,10 @@ Fine-grained access control via environment variables:
 | `MAG_MESSAGES_ATTACHMENTS` | true | Download message attachments |
 | `MAG_REMINDERS_READ` | true | List reminders and lists |
 | `MAG_REMINDERS_WRITE` | true | Create, update, delete reminders |
+| `MAG_NOTES_READ` | true | List, search, and fetch notes |
+| `MAG_NOTES_WRITE` | true | Create, update, move, and delete notes and folders |
+| `MAG_ICLOUD_READ` | true | List Mobile Documents directories and read files |
+| `MAG_ICLOUD_WRITE` | true | Create, replace, move, and delete files |
 
 Agents can discover enabled capabilities via `GET /v1/capabilities`.
 
