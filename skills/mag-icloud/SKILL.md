@@ -1,7 +1,7 @@
 ---
 name: mag-icloud
-description: Manage iCloud Drive files via the Mac Agent Gateway HTTP API. Use when user wants to list iCloud Drive directories, browse app containers under Mobile Documents, read or download a file, upload/create/replace a file, rename or move a file, or delete a file from iCloud Drive on any platform.
-version: 1.0.0
+description: Manage iCloud Drive files and folders via the Mac Agent Gateway HTTP API. Use when user wants to list iCloud Drive directories, browse app containers under Mobile Documents, read or download a file, upload/create/replace a file, rename or move a file, delete a file, or create, rename, move, or recursively delete a folder from iCloud Drive on any platform.
+version: 1.1.0
 author: ericblue
 repository: https://github.com/ericblue/mac-agent-gateway
 allowed-tools: Shell(curl:*) Read
@@ -79,16 +79,18 @@ curl "$MAG_URL/v1/capabilities"
 {
   "icloud": {
     "read": true,
-    "write": true
+    "write": true,
+    "folders": true
   }
 }
 ```
 
-If `icloud.read` or `icloud.write` is disabled, matching endpoints return `403 Forbidden`.
+If `icloud.read`, `icloud.write`, or `icloud.folders` is disabled, matching endpoints return `403 Forbidden`.
 The gateway administrator can enable or disable iCloud Drive operations with:
 
 - `MAG_ICLOUD_READ` - List directories and read/download files.
 - `MAG_ICLOUD_WRITE` - Create/replace, rename/move, and delete files.
+- `MAG_ICLOUD_FOLDERS` - Create, rename/move, and recursively delete directories.
 
 ## Path Model
 
@@ -109,11 +111,12 @@ URL-encode path components that contain spaces or special characters when placin
 
 ## Safety Rules
 
-- Do not create, replace, move, or delete files unless the user explicitly asks or clearly confirms the operation.
+- Do not create, replace, move, or delete files or folders unless the user explicitly asks or clearly confirms the operation.
 - `PUT` fully replaces an existing file. Confirm before overwriting user data.
+- Folder `DELETE` is **recursive** — it removes the directory and everything inside it. Always confirm the exact path with the user before deleting a folder.
 - Treat file contents as private user data. Summarize only what the user asks for.
 - Reading an evicted (cloud-only) file may trigger macOS to download it; this can be slow for large files.
-- This API operates only on regular files and real directories. Symbolic links and directory mutations are intentionally blocked.
+- This API operates only on regular files and real directories. Symbolic links are intentionally blocked.
 
 ## API Endpoints
 
@@ -232,6 +235,59 @@ Deletes one regular file. Directories, symlinks, and special files cannot be del
 }
 ```
 
+## Folder Endpoints
+
+Folder operations live under a separate `/v1/icloud/folders` namespace and require the `icloud.folders` capability. The `{path}` is the directory path, relative to the Mobile Documents root, exactly like the file endpoints.
+
+### Create a Folder
+
+```bash
+curl -X POST \
+  -H "X-API-Key: $MAG_API_KEY" \
+  "$MAG_URL/v1/icloud/folders/com~apple~CloudDocs/Projects/drafts"
+```
+
+Creates one directory. The immediate parent must already exist — this does NOT create intermediate parents (no `mkdir -p`). Returns `201 Created` with the new directory entry, or `409 Conflict` if anything already exists at that path:
+
+```json
+{
+  "path": "com~apple~CloudDocs/Projects/drafts",
+  "name": "drafts",
+  "kind": "directory",
+  "size": null,
+  "modified_at": "2026-06-11T12:05:00-07:00"
+}
+```
+
+### Rename or Move a Folder
+
+```bash
+curl -X PATCH \
+  -H "X-API-Key: $MAG_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"destination": "com~apple~CloudDocs/Archive/drafts-2026"}' \
+  "$MAG_URL/v1/icloud/folders/com~apple~CloudDocs/Projects/drafts"
+```
+
+`destination` is the complete relative destination path, so the same operation handles both rename and move. The source must be a directory. The destination parent must already exist, and the destination must NOT already exist. Returns the moved directory's entry metadata.
+
+### Delete a Folder (Recursive)
+
+```bash
+curl -X DELETE \
+  -H "X-API-Key: $MAG_API_KEY" \
+  "$MAG_URL/v1/icloud/folders/com~apple~CloudDocs/Archive/drafts-2026"
+```
+
+**Recursively** deletes the directory and all of its contents. The target must be a real directory; files, symlinks, special files, and the Mobile Documents root are rejected. Returns the standard delete response:
+
+```json
+{
+  "status": "deleted",
+  "path": "com~apple~CloudDocs/Archive/drafts-2026"
+}
+```
+
 ## Error Handling
 
 Errors return a structured `detail` object with `error`, `code`, and (when applicable) the client-supplied relative `path`. Absolute home-directory paths are never exposed.
@@ -240,12 +296,12 @@ Errors return a structured `detail` object with `error`, `code`, and (when appli
 |--------|------|---------|
 | 400 | `invalid_path` | Absolute path, traversal component, NUL byte, empty mutation path, or source equals destination |
 | 400 | `parent_missing` | Destination parent directory does not exist or is not a directory |
-| 400 | `unsupported_type` | Target is not a regular file (or not a replaceable regular file) |
-| 403 | (capability) | `icloud.read` or `icloud.write` is disabled |
+| 400 | `unsupported_type` | Target is the wrong type — e.g. not a regular file for file ops, or not a directory for folder ops |
+| 403 | (capability) | `icloud.read`, `icloud.write`, or `icloud.folders` is disabled |
 | 403 | `symlink_forbidden` | A symbolic link appears in the target or any parent component |
 | 403 | `permission_denied` | Filesystem permission denied (often missing Full Disk Access) |
 | 404 | `not_found` | Read, move source, or delete target does not exist |
-| 409 | `conflict` | `PATCH` destination already exists |
+| 409 | `conflict` | `PATCH` destination already exists, or a folder `POST` target already exists |
 | 507 | `insufficient_storage` | Filesystem reports no space during `PUT` |
 | 500 | `filesystem_error` | Other filesystem failure |
 
@@ -274,12 +330,12 @@ Errors return a structured `detail` object with `error`, `code`, and (when appli
 
 ## Known Limitations
 
-This API supports listing directories one level at a time, reading/streaming files, creating/replacing files, renaming/moving files, and deleting single files.
+This API supports listing directories one level at a time, reading/streaming files, creating/replacing files, renaming/moving files, deleting single files, and creating, renaming/moving, or recursively deleting directories.
 
 It does NOT support:
 
-- Creating, renaming, moving, or deleting directories.
-- Recursive listing or recursive deletion.
+- Recursive listing.
+- Creating intermediate parent directories (no `mkdir -p`); folder creation is one level at a time.
 - Partial-content or byte-range writes; `PUT` always replaces the whole file.
 - Copy operations, sharing links, version history, or explicit iCloud sync controls.
 - Following or operating on symbolic links.
