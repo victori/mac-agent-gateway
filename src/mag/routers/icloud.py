@@ -34,6 +34,7 @@ def _require_capability(capability: str) -> None:
     enabled = {
         "read": settings.icloud_read,
         "write": settings.icloud_write,
+        "folders": settings.icloud_folders,
     }.get(capability, False)
     if not enabled:
         raise HTTPException(
@@ -74,6 +75,43 @@ async def reject_icloud_root_mutation() -> None:
     """Reject mutations without a relative file path."""
     _require_capability("write")
     raise _http_error(ICloudDriveError("invalid_path", "A file path is required", ""))
+
+
+@router.api_route("/folders", methods=["POST", "PATCH", "DELETE"], include_in_schema=False)
+async def reject_icloud_folder_root_mutation() -> None:
+    """Reject folder mutations without a relative directory path."""
+    _require_capability("folders")
+    raise _http_error(ICloudDriveError("invalid_path", "A directory path is required", ""))
+
+
+@router.post("/folders/{path:path}", response_model=ICloudEntry, status_code=201)
+async def create_icloud_folder(path: str) -> ICloudEntry:
+    """Create one directory whose parent already exists."""
+    _require_capability("folders")
+    try:
+        return icloud_drive.create_directory(path)
+    except ICloudDriveError as error:
+        raise _http_error(error) from None
+
+
+@router.patch("/folders/{path:path}", response_model=ICloudEntry)
+async def move_icloud_folder(path: str, data: ICloudMove) -> ICloudEntry:
+    """Rename or move a directory without overwriting a destination."""
+    _require_capability("folders")
+    try:
+        return icloud_drive.move_directory(path, data.destination)
+    except ICloudDriveError as error:
+        raise _http_error(error) from None
+
+
+@router.delete("/folders/{path:path}", response_model=ICloudDeleteResponse)
+async def delete_icloud_folder(path: str) -> ICloudDeleteResponse:
+    """Recursively delete one directory and all of its contents."""
+    _require_capability("folders")
+    try:
+        return icloud_drive.delete_directory(path)
+    except ICloudDriveError as error:
+        raise _http_error(error) from None
 
 
 @router.get("/{path:path}", response_model=None)

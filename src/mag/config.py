@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     # iCloud Drive capabilities
     icloud_read: bool = True  # List directories and read files
     icloud_write: bool = True  # Create, replace, move, and delete files
+    icloud_folders: bool = True  # Create, rename/move, and recursively delete directories
 
 
 class Capabilities(BaseModel):
@@ -121,6 +122,7 @@ class Capabilities(BaseModel):
     class ICloudCapabilities(BaseModel):
         read: bool
         write: bool
+        folders: bool
 
     messages: MessagesCapabilities
     reminders: RemindersCapabilities
@@ -160,5 +162,6 @@ def get_capabilities() -> Capabilities:
         icloud=Capabilities.ICloudCapabilities(
             read=settings.icloud_read,
             write=settings.icloud_write,
+            folders=settings.icloud_folders,
         ),
     )

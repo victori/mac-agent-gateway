@@ -283,6 +283,8 @@ async def startup_event() -> None:
         disabled.append("icloud.read")
     if not caps.icloud.write:
         disabled.append("icloud.write")
+    if not caps.icloud.folders:
+        disabled.append("icloud.folders")
     if disabled:
         logger.info("Disabled capabilities: %s", ", ".join(disabled))
     

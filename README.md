@@ -153,7 +153,7 @@ curl -H "X-API-Key: $KEY" http://100.x.x.x:8123/health
 - **Apple Reminders API** — Full CRUD: create, list, update, complete, delete reminders and lists
 - **Apple Messages API** — Send/reply to iMessages, list threads, search messages, extract links, stream new messages
 - **Apple Notes API** — List, search, fetch, create, update, move, and delete notes through Notes.app
-- **iCloud Drive API** — List directories and read, create, replace, move, or delete files across `~/Library/Mobile Documents`
+- **iCloud Drive API** — List directories; read, create, replace, move, or delete files; and create, rename, or recursively delete folders across `~/Library/Mobile Documents`
 - **Attachment Downloads** — Download photos and files from messages via secure REST API
 - **OpenAPI/Swagger** — Auto-generated docs at `/docs` and `/openapi.json`
 - **Agent Skills** — Portable skill definitions for OpenClaw (formerly Clawdbot/Moltbot), Cursor, and other agents
@@ -250,6 +250,7 @@ MAG_NOTES_READ=true              # Enable/disable reading notes
 MAG_NOTES_WRITE=true             # Enable/disable creating notes
 MAG_ICLOUD_READ=true             # Enable/disable directory listing and file reads
 MAG_ICLOUD_WRITE=true            # Enable/disable file create/replace/move/delete
+MAG_ICLOUD_FOLDERS=true          # Enable/disable folder create/rename/recursive-delete
 
 # Security restrictions (optional)
 MAG_MESSAGES_SEND_ALLOWLIST=+15551234567,user@example.com  # Limit recipients
@@ -457,7 +458,7 @@ MAG uses `macnotesapp` for Notes.app access. The Notes API supports listing, sea
 
 All `{path}` values are relative to `~/Library/Mobile Documents`. This includes the user-visible iCloud Drive container at `com~apple~CloudDocs` and application-specific containers.
 
-> **Security:** Application containers can contain sensitive or app-private data. Enabling `MAG_ICLOUD_READ` or `MAG_ICLOUD_WRITE` grants authenticated clients access across the full Mobile Documents tree, not only `com~apple~CloudDocs`.
+> **Security:** Application containers can contain sensitive or app-private data. Enabling `MAG_ICLOUD_READ`, `MAG_ICLOUD_WRITE`, or `MAG_ICLOUD_FOLDERS` grants authenticated clients access across the full Mobile Documents tree, not only `com~apple~CloudDocs`.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -466,6 +467,9 @@ All `{path}` values are relative to `~/Library/Mobile Documents`. This includes 
 | PUT | `/v1/icloud/{path}` | Create or fully replace a file from the raw body |
 | PATCH | `/v1/icloud/{path}` | Rename or move a file |
 | DELETE | `/v1/icloud/{path}` | Delete a file |
+| POST | `/v1/icloud/folders/{path}` | Create a directory (parent must exist) |
+| PATCH | `/v1/icloud/folders/{path}` | Rename or move a directory |
+| DELETE | `/v1/icloud/folders/{path}` | Recursively delete a directory and its contents |
 
 ```bash
 # List the user-visible iCloud Drive root
@@ -486,17 +490,30 @@ curl -H "X-API-Key: $KEY" \
 curl -X PATCH -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"destination":"com~apple~CloudDocs/Archive/report.pdf"}' \
   "http://localhost:8123/v1/icloud/com~apple~CloudDocs/Reports/report.pdf"
+
+# Create a directory (its parent must already exist)
+curl -X POST -H "X-API-Key: $KEY" \
+  "http://localhost:8123/v1/icloud/folders/com~apple~CloudDocs/Archive"
+
+# Rename or move a directory
+curl -X PATCH -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"destination":"com~apple~CloudDocs/Archive2024"}' \
+  "http://localhost:8123/v1/icloud/folders/com~apple~CloudDocs/Archive"
+
+# Recursively delete a directory and everything inside it
+curl -X DELETE -H "X-API-Key: $KEY" \
+  "http://localhost:8123/v1/icloud/folders/com~apple~CloudDocs/Archive2024"
 ```
 
 **iCloud Drive Safety And Limitations:**
 
-- Directory access is read-only and non-recursive; directory create, move, rename, and delete are blocked.
+- File reads and directory listings are non-recursive.
+- Directory create, rename, and move operate one level at a time; the parent must already exist. Directory `DELETE` is recursive and removes all contents, so it is gated behind the separate `MAG_ICLOUD_FOLDERS` capability.
 - Symbolic links, traversal components, absolute paths, and special files are blocked.
 - `PUT` requires an existing parent directory and atomically replaces regular files.
-- `PATCH` requires a full destination filename and returns `409` if that destination exists.
+- `PATCH` (file or folder) requires a full destination path and returns `409` if that destination exists.
 - Reading an evicted iCloud file may cause macOS to download it. MAG does not expose sync state, version history, sharing links, or conflict resolution.
 
->>>>>>> icloud
 **Attachments:**
 
 To download attachments (photos, files) from messages:
@@ -731,6 +748,7 @@ Fine-grained access control via environment variables:
 | `MAG_NOTES_WRITE` | true | Create, update, move, and delete notes and folders |
 | `MAG_ICLOUD_READ` | true | List Mobile Documents directories and read files |
 | `MAG_ICLOUD_WRITE` | true | Create, replace, move, and delete files |
+| `MAG_ICLOUD_FOLDERS` | true | Create, rename/move, and recursively delete directories |
 
 Agents can discover enabled capabilities via `GET /v1/capabilities`.
 

@@ -13,14 +13,15 @@ The API supports binary-safe file operations and non-recursive directory listing
 - Create or fully replace a regular file from a raw request body.
 - Rename or move a regular file.
 - Delete a regular file.
-- Expose independent read and write capability flags.
+- Create a directory, rename or move a directory, and recursively delete a directory.
+- Expose independent read, write, and folder capability flags.
 
 All API paths are relative to `~/Library/Mobile Documents`. This includes `com~apple~CloudDocs` and every application container beneath the Mobile Documents root.
 
 Out of scope:
 
-- Creating, moving, renaming, or deleting directories.
-- Recursive directory listing or recursive deletion.
+- Recursive directory listing.
+- Creating intermediate parent directories (`mkdir -p` semantics); folder creation is one level at a time.
 - Partial-content updates or byte-range writes.
 - Copy operations.
 - Sharing links, version history, conflict resolution, or explicit iCloud synchronization controls.
@@ -106,7 +107,23 @@ Deletes one regular file and returns:
 }
 ```
 
-Directories, symlinks, special files, and the Mobile Documents root cannot be deleted through this API.
+Directories, symlinks, special files, and the Mobile Documents root cannot be deleted through this file endpoint. Use the folder endpoints below to remove directories.
+
+### Folder Operations
+
+Folder mutations live under a separate `/v1/icloud/folders` namespace so directory intent is explicit in the URL and never collides with the file routes. All require the `icloud.folders` capability.
+
+`POST /v1/icloud/folders/{path}`
+
+Creates one directory. The immediate parent must already exist; intermediate parents are not created (`mkdir`, not `mkdir -p`). Returns `201 Created` with the new directory's `ICloudEntry`. Returns `409 Conflict` if any filesystem object already occupies the path.
+
+`PATCH /v1/icloud/folders/{path}`
+
+Renames or moves a directory. The request body is the same `{"destination": "..."}` contract used for files. The source must be a directory. The destination parent must exist, the destination must not already exist (`409`), and a destination equal to the source is rejected. Returns the moved directory's `ICloudEntry`.
+
+`DELETE /v1/icloud/folders/{path}`
+
+Recursively deletes the directory and all of its contents and returns the standard delete response. The target must be a real directory; files, symlinks, special files, and the Mobile Documents root are rejected. This is the most destructive operation in the API and is gated behind its own capability so operators can enable file writes while leaving recursive folder deletion disabled.
 
 ## Models
 
@@ -161,8 +178,9 @@ Every client-supplied path must pass one shared validation routine before filesy
 - Inspect every existing component with non-following metadata calls and reject the path if any component is a symbolic link.
 - For a new `PUT` destination, validate every existing parent component and require the immediate parent to be a real directory.
 - For `PATCH`, independently validate the source, destination, and destination parent.
+- For folder operations, the same validation applies: `POST` requires an existing real-directory parent and rejects an existing target; folder `PATCH` validates source (a real directory), destination, and destination parent; folder `DELETE` requires the target to be a real, non-symlink directory before recursive removal.
 
-The service never uses `Path.resolve()` as permission to follow a symlink. Symlink detection is explicit and occurs before each operation. Operations are limited to regular files and real directories so FIFOs, sockets, devices, aliases represented as symlinks, and other special entries cannot be opened as files.
+The service never uses `Path.resolve()` as permission to follow a symlink. Symlink detection is explicit and occurs before each operation. Operations are limited to regular files and real directories so FIFOs, sockets, devices, aliases represented as symlinks, and other special entries cannot be opened as files. Recursive folder deletion uses the validated real-directory target; `_target` guarantees no symlink components, and the final target is confirmed to be a non-symlink directory before removal.
 
 ## Capabilities
 
@@ -170,6 +188,7 @@ Add settings enabled by default:
 
 - `MAG_ICLOUD_READ=true`
 - `MAG_ICLOUD_WRITE=true`
+- `MAG_ICLOUD_FOLDERS=true`
 
 Add an `icloud` object to `/v1/capabilities`:
 
@@ -177,7 +196,8 @@ Add an `icloud` object to `/v1/capabilities`:
 {
   "icloud": {
     "read": true,
-    "write": true
+    "write": true,
+    "folders": true
   }
 }
 ```
@@ -186,6 +206,7 @@ Capability requirements:
 
 - `icloud.read`: root listing, directory listing, and file reads.
 - `icloud.write`: file create/replace, rename/move, and delete.
+- `icloud.folders`: directory create, rename/move, and recursive delete.
 
 All endpoints continue to require the existing `X-API-Key` authentication dependency.
 
@@ -193,10 +214,10 @@ All endpoints continue to require the existing `X-API-Key` authentication depend
 
 Use stable HTTP status codes with structured `detail` objects:
 
-- `400 Bad Request`: absolute/traversal paths, empty mutation paths, source and destination equality, unsupported filesystem object types, directory mutation attempts, or missing/non-directory destination parents.
+- `400 Bad Request`: absolute/traversal paths, empty mutation paths, source and destination equality, unsupported filesystem object types (such as a file target for a folder operation), or missing/non-directory destination parents.
 - `403 Forbidden`: disabled capabilities, symbolic-link traversal, or filesystem permission failures.
 - `404 Not Found`: missing read, move source, or delete target.
-- `409 Conflict`: a `PATCH` destination already exists.
+- `409 Conflict`: a `PATCH` destination already exists, or a folder `POST` target already exists.
 - `507 Insufficient Storage`: the filesystem reports insufficient space during `PUT`.
 - `500 Internal Server Error`: other filesystem failures, without exposing unrelated absolute paths or stack traces.
 
@@ -228,29 +249,34 @@ Service coverage:
 - Failed streamed writes remove temporary files and preserve an existing destination.
 - Missing parents and directory targets are rejected.
 - `PATCH` supports rename and move but never overwrites an existing destination.
-- Directory deletion and all other directory mutations are rejected.
-- Absolute paths, traversal components, and root mutation attempts are rejected.
+- File `DELETE` rejects directories; directory removal is handled by the folder endpoints.
+- Folder create returns an entry, requires an existing parent, and rejects an existing target.
+- Folder rename/move supports both operations, rejects a non-directory source, and never overwrites an existing destination.
+- Folder delete removes a populated tree recursively and rejects files, symlinks, missing targets, and the root.
+- Absolute paths, traversal components, and root mutation attempts are rejected for file and folder operations.
 - A symlink in the target or any existing parent component is rejected for every direct operation.
 - Special files are rejected rather than read or mutated.
 - Service exceptions do not expose the absolute temporary root.
 
 Router coverage:
 
-- Every route requires the API key.
-- Read and write capabilities are enforced independently.
+- Every route, including the folder routes, requires the API key.
+- Read, write, and folder capabilities are enforced independently.
 - Root and directory `GET` requests return JSON listings.
 - File `GET` requests return exact raw binary bytes and an appropriate content type.
 - `PUT` returns `201` for create and `200` for replacement.
-- `PATCH` validates JSON and returns moved metadata.
-- `DELETE` returns the documented status response.
+- File and folder `PATCH` validate JSON and return moved metadata.
+- File and folder `DELETE` return the documented status response.
+- Folder `POST` returns `201` with the new directory entry.
+- File and folder root mutations return `400`.
 - Service error categories map to the documented HTTP status codes.
-- `/v1/capabilities` includes the iCloud capability object.
+- `/v1/capabilities` includes the iCloud capability object with `read`, `write`, and `folders`.
 
 Run the full test suite and Ruff after focused iCloud tests pass.
 
 ## Documentation
 
-Update `.env.example` with the iCloud capability flags. Update README feature, configuration, capabilities, endpoint, security, and limitation sections. Document that API paths begin below `~/Library/Mobile Documents`, that this exposes app containers as well as `com~apple~CloudDocs`, and that symbolic links and directory mutations are intentionally blocked.
+Update `.env.example` with the iCloud capability flags, including `MAG_ICLOUD_FOLDERS`. Update README feature, configuration, capabilities, endpoint, security, and limitation sections. Document that API paths begin below `~/Library/Mobile Documents`, that this exposes app containers as well as `com~apple~CloudDocs`, that symbolic links are intentionally blocked, and that folder deletion is recursive and separately gated.
 
 No runtime dependency is required beyond Python's standard library and the project's existing FastAPI stack.
 
@@ -259,8 +285,9 @@ No runtime dependency is required beyond Python's standard library and the proje
 - Authenticated clients can list every real directory below `~/Library/Mobile Documents` one level at a time.
 - Authenticated clients can stream any regular file below that root, including binary files.
 - Authenticated clients can create, fully replace, rename, move, and delete regular files below that root.
-- Directory mutations, recursive operations, special-file access, path traversal, and symbolic-link traversal are rejected.
-- Read and write operations can be disabled independently and are advertised by `/v1/capabilities`.
+- Authenticated clients can create, rename, move, and recursively delete directories below that root via the folder endpoints.
+- Special-file access, path traversal, and symbolic-link traversal are rejected for both file and folder operations.
+- Read, write, and folder operations can be disabled independently and are advertised by `/v1/capabilities`.
 - Uploads do not buffer the complete body in memory and do not expose partial destination files.
 - Tests pass without touching the real Mobile Documents directory.
 - README and `.env.example` describe the API and its security boundary.

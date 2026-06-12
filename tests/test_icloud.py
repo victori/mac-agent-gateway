@@ -60,17 +60,18 @@ class TestICloudCapabilities:
         response = client.get("/v1/capabilities")
 
         assert response.status_code == 200
-        assert response.json()["icloud"] == {"read": True, "write": True}
+        assert response.json()["icloud"] == {"read": True, "write": True, "folders": True}
 
     def test_capabilities_reflect_disabled_icloud_settings(self, monkeypatch) -> None:
         monkeypatch.setenv("MAG_ICLOUD_READ", "false")
         monkeypatch.setenv("MAG_ICLOUD_WRITE", "false")
+        monkeypatch.setenv("MAG_ICLOUD_FOLDERS", "false")
         get_settings.cache_clear()
         client = TestClient(app)
 
         response = client.get("/v1/capabilities")
 
-        assert response.json()["icloud"] == {"read": False, "write": False}
+        assert response.json()["icloud"] == {"read": False, "write": False, "folders": False}
         get_settings.cache_clear()
 
 
@@ -419,6 +420,149 @@ class TestICloudDriveMutations:
             assert exc_info.value.code == "invalid_path"
 
 
+class TestICloudDriveFolders:
+    def test_create_directory_returns_entry(self, tmp_path: Path) -> None:
+        (tmp_path / "parent").mkdir()
+        service = ICloudDriveService(root=tmp_path)
+
+        entry = service.create_directory("parent/new")
+
+        assert entry.path == "parent/new"
+        assert entry.name == "new"
+        assert entry.kind == "directory"
+        assert (tmp_path / "parent" / "new").is_dir()
+
+    def test_create_directory_requires_existing_parent(self, tmp_path: Path) -> None:
+        service = ICloudDriveService(root=tmp_path)
+
+        with pytest.raises(ICloudDriveError) as exc_info:
+            service.create_directory("missing/new")
+
+        assert exc_info.value.code == "parent_missing"
+        assert not (tmp_path / "missing").exists()
+
+    def test_create_directory_rejects_existing_path(self, tmp_path: Path) -> None:
+        (tmp_path / "folder").mkdir()
+        (tmp_path / "file.txt").write_bytes(b"file")
+        service = ICloudDriveService(root=tmp_path)
+
+        for path in ("folder", "file.txt"):
+            with pytest.raises(ICloudDriveError) as exc_info:
+                service.create_directory(path)
+            assert exc_info.value.code == "conflict"
+
+    def test_create_directory_rejects_root_and_traversal(self, tmp_path: Path) -> None:
+        service = ICloudDriveService(root=tmp_path)
+
+        for path in ("", "../outside"):
+            with pytest.raises(ICloudDriveError) as exc_info:
+                service.create_directory(path)
+            assert exc_info.value.code == "invalid_path"
+
+    def test_create_directory_rejects_symlink_parent(self, tmp_path: Path) -> None:
+        outside = tmp_path.parent / f"{tmp_path.name}-mkdir-outside"
+        outside.mkdir()
+        (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
+        service = ICloudDriveService(root=tmp_path)
+
+        with pytest.raises(ICloudDriveError) as exc_info:
+            service.create_directory("linked/new")
+
+        assert exc_info.value.code == "symlink_forbidden"
+
+    def test_move_directory_renames_and_moves(self, tmp_path: Path) -> None:
+        (tmp_path / "source").mkdir()
+        (tmp_path / "source" / "child.txt").write_bytes(b"child")
+        (tmp_path / "archive").mkdir()
+        service = ICloudDriveService(root=tmp_path)
+
+        entry = service.move_directory("source", "archive/renamed")
+
+        assert entry.path == "archive/renamed"
+        assert entry.kind == "directory"
+        assert not (tmp_path / "source").exists()
+        assert (tmp_path / "archive" / "renamed" / "child.txt").read_bytes() == b"child"
+
+    def test_move_directory_never_overwrites_existing_destination(self, tmp_path: Path) -> None:
+        (tmp_path / "source").mkdir()
+        (tmp_path / "destination").mkdir()
+        service = ICloudDriveService(root=tmp_path)
+
+        with pytest.raises(ICloudDriveError) as exc_info:
+            service.move_directory("source", "destination")
+
+        assert exc_info.value.code == "conflict"
+        assert (tmp_path / "source").is_dir()
+        assert (tmp_path / "destination").is_dir()
+
+    @pytest.mark.parametrize(
+        ("source", "destination", "expected_code"),
+        [
+            ("missing", "new", "not_found"),
+            ("source", "source", "invalid_path"),
+            ("source", "missing/new", "parent_missing"),
+            ("file.txt", "new", "unsupported_type"),
+            ("", "new", "invalid_path"),
+        ],
+    )
+    def test_move_directory_rejects_invalid_operations(
+        self, tmp_path: Path, source: str, destination: str, expected_code: str
+    ) -> None:
+        (tmp_path / "source").mkdir()
+        (tmp_path / "file.txt").write_bytes(b"file")
+        service = ICloudDriveService(root=tmp_path)
+
+        with pytest.raises(ICloudDriveError) as exc_info:
+            service.move_directory(source, destination)
+
+        assert exc_info.value.code == expected_code
+
+    def test_delete_directory_removes_tree_recursively(self, tmp_path: Path) -> None:
+        nested = tmp_path / "folder" / "sub"
+        nested.mkdir(parents=True)
+        (nested / "deep.txt").write_bytes(b"deep")
+        (tmp_path / "folder" / "top.txt").write_bytes(b"top")
+        service = ICloudDriveService(root=tmp_path)
+
+        result = service.delete_directory("folder")
+
+        assert result.path == "folder"
+        assert not (tmp_path / "folder").exists()
+
+    def test_delete_directory_rejects_file_symlink_missing_and_root(self, tmp_path: Path) -> None:
+        (tmp_path / "file.txt").write_bytes(b"file")
+        (tmp_path / "link").symlink_to(tmp_path / "file.txt")
+        service = ICloudDriveService(root=tmp_path)
+
+        expected = {
+            "missing": "not_found",
+            "file.txt": "unsupported_type",
+            "link": "symlink_forbidden",
+            "": "invalid_path",
+        }
+        for path, code in expected.items():
+            with pytest.raises(ICloudDriveError) as exc_info:
+                service.delete_directory(path)
+            assert exc_info.value.code == code
+        assert (tmp_path / "file.txt").exists()
+
+    def test_delete_directory_rejects_symlink_parent_and_traversal(self, tmp_path: Path) -> None:
+        outside = tmp_path.parent / f"{tmp_path.name}-rmdir-outside"
+        outside.mkdir()
+        (outside / "child").mkdir()
+        (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
+        service = ICloudDriveService(root=tmp_path)
+
+        with pytest.raises(ICloudDriveError) as symlink_error:
+            service.delete_directory("linked/child")
+        with pytest.raises(ICloudDriveError) as traversal_error:
+            service.delete_directory("../outside")
+
+        assert symlink_error.value.code == "symlink_forbidden"
+        assert traversal_error.value.code == "invalid_path"
+        assert (outside / "child").is_dir()
+
+
 class TestICloudRouter:
     @pytest.fixture
     def client(self) -> TestClient:
@@ -436,6 +580,11 @@ class TestICloudRouter:
             "/v1/icloud/file.txt", json={"destination": "moved.txt"}
         ).status_code == 401
         assert client.delete("/v1/icloud/file.txt").status_code == 401
+        assert client.post("/v1/icloud/folders/dir").status_code == 401
+        assert client.patch(
+            "/v1/icloud/folders/dir", json={"destination": "moved"}
+        ).status_code == 401
+        assert client.delete("/v1/icloud/folders/dir").status_code == 401
 
     def test_cors_preflight_allows_put(self, client: TestClient) -> None:
         response = client.options(
@@ -551,6 +700,54 @@ class TestICloudRouter:
             "path": "archive/new.txt",
         }
 
+    def test_post_creates_folder_and_returns_created(
+        self, client: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        entry = ICloudEntry(path="parent/new", name="new", kind="directory")
+        with patch(
+            "mag.routers.icloud.icloud_drive.create_directory", return_value=entry
+        ) as create:
+            response = client.post("/v1/icloud/folders/parent/new", headers=auth_headers)
+
+        assert response.status_code == 201
+        assert response.json()["path"] == "parent/new"
+        assert response.json()["kind"] == "directory"
+        create.assert_called_once_with("parent/new")
+
+    def test_folder_patch_moves_and_delete_returns_status(
+        self, client: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        moved = ICloudEntry(path="archive/renamed", name="renamed", kind="directory")
+        with patch(
+            "mag.routers.icloud.icloud_drive.move_directory", return_value=moved
+        ) as move:
+            patch_response = client.patch(
+                "/v1/icloud/folders/old",
+                headers=auth_headers,
+                json={"destination": "archive/renamed"},
+            )
+        with patch(
+            "mag.routers.icloud.icloud_drive.delete_directory",
+            return_value=ICloudDeleteResponse(path="archive/renamed"),
+        ) as delete:
+            delete_response = client.delete(
+                "/v1/icloud/folders/archive/renamed", headers=auth_headers
+            )
+
+        assert patch_response.status_code == 200
+        assert patch_response.json()["path"] == "archive/renamed"
+        move.assert_called_once_with("old", "archive/renamed")
+        assert delete_response.json() == {"status": "deleted", "path": "archive/renamed"}
+        delete.assert_called_once_with("archive/renamed")
+
+    def test_folder_root_mutations_return_bad_request(
+        self, client: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        for method in ("POST", "PATCH", "DELETE"):
+            response = client.request(method, "/v1/icloud/folders", headers=auth_headers)
+            assert response.status_code == 400
+            assert response.json()["detail"]["code"] == "invalid_path"
+
     @pytest.mark.parametrize(
         ("code", "status_code"),
         [
@@ -612,5 +809,41 @@ class TestICloudRouterCapabilities:
             assert client.put(
                 "/v1/icloud/file.txt", headers=headers, content=b"data"
             ).status_code == 403
+        finally:
+            get_settings.cache_clear()
+
+    def test_folder_capability_is_independent_of_write(self, monkeypatch) -> None:
+        try:
+            monkeypatch.setenv("MAG_ICLOUD_WRITE", "true")
+            monkeypatch.setenv("MAG_ICLOUD_FOLDERS", "false")
+            get_settings.cache_clear()
+            client = TestClient(app)
+            headers = {"X-API-Key": "test-api-key-for-unit-tests-only-1234567890"}
+
+            assert client.post("/v1/icloud/folders/dir", headers=headers).status_code == 403
+            assert client.patch(
+                "/v1/icloud/folders/dir", headers=headers, json={"destination": "moved"}
+            ).status_code == 403
+            assert client.delete("/v1/icloud/folders/dir", headers=headers).status_code == 403
+
+            # File writes remain enabled while folder mutations are disabled.
+            entry = ICloudEntry(path="file.txt", name="file.txt", kind="file", size=4)
+            with patch(
+                "mag.routers.icloud.icloud_drive.put", new_callable=AsyncMock
+            ) as put:
+                put.return_value = (entry, True)
+                assert client.put(
+                    "/v1/icloud/file.txt", headers=headers, content=b"data"
+                ).status_code == 201
+
+            monkeypatch.setenv("MAG_ICLOUD_FOLDERS", "true")
+            get_settings.cache_clear()
+            created = ICloudEntry(path="dir", name="dir", kind="directory")
+            with patch(
+                "mag.routers.icloud.icloud_drive.create_directory", return_value=created
+            ):
+                assert client.post(
+                    "/v1/icloud/folders/dir", headers=headers
+                ).status_code == 201
         finally:
             get_settings.cache_clear()

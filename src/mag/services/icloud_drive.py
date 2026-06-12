@@ -6,6 +6,7 @@ import asyncio
 import errno
 import mimetypes
 import os
+import shutil
 import stat
 import tempfile
 from collections.abc import AsyncIterable
@@ -288,6 +289,71 @@ class ICloudDriveService:
         target, _ = self._require_regular_file(relative_path)
         try:
             os.unlink(target)
+        except OSError as exc:
+            raise self._os_error(exc, relative_path) from None
+        return ICloudDeleteResponse(path=relative_path)
+
+    def _require_directory(self, relative_path: str) -> tuple[Path, os.stat_result]:
+        target = self._target(relative_path)
+        try:
+            target_stat = os.lstat(target)
+        except OSError as exc:
+            raise self._os_error(exc, relative_path) from None
+        if stat.S_ISLNK(target_stat.st_mode):
+            raise ICloudDriveError(
+                "symlink_forbidden", "Symbolic links cannot be accessed", relative_path
+            )
+        if not stat.S_ISDIR(target_stat.st_mode):
+            raise ICloudDriveError(
+                "unsupported_type", "Operation requires a directory", relative_path
+            )
+        return target, target_stat
+
+    def create_directory(self, relative_path: str) -> ICloudEntry:
+        target = self._target(relative_path)
+        self._require_parent_directory(target, relative_path)
+        try:
+            os.lstat(target)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise self._os_error(exc, relative_path) from None
+        else:
+            raise ICloudDriveError("conflict", "Path already exists", relative_path)
+        try:
+            os.mkdir(target)
+            target_stat = os.lstat(target)
+        except OSError as exc:
+            raise self._os_error(exc, relative_path) from None
+        return self._entry_from_stat(relative_path, target.name, target_stat)
+
+    def move_directory(self, source_path: str, destination_path: str) -> ICloudEntry:
+        source, _ = self._require_directory(source_path)
+        if source_path == destination_path:
+            raise ICloudDriveError(
+                "invalid_path", "Source and destination must be different", source_path
+            )
+        destination = self._target(destination_path)
+        self._require_parent_directory(destination, destination_path)
+        try:
+            os.lstat(destination)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise self._os_error(exc, destination_path) from None
+        else:
+            raise ICloudDriveError("conflict", "Destination already exists", destination_path)
+        try:
+            os.rename(source, destination)
+            destination_stat = os.lstat(destination)
+        except OSError as exc:
+            raise self._os_error(exc, destination_path) from None
+        return self._entry_from_stat(destination_path, destination.name, destination_stat)
+
+    def delete_directory(self, relative_path: str) -> ICloudDeleteResponse:
+        target, _ = self._require_directory(relative_path)
+        try:
+            shutil.rmtree(target)
         except OSError as exc:
             raise self._os_error(exc, relative_path) from None
         return ICloudDeleteResponse(path=relative_path)
